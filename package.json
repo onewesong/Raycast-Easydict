@@ -28,6 +28,13 @@
       ]
     },
     {
+      "name": "vocabulary-book",
+      "title": "Vocabulary Book",
+      "subtitle": "View your vocabulary book",
+      "description": "View and manage your saved vocabulary words.",
+      "mode": "view"
+    },
+    {
       "name": "ocr",
       "title": "OCR Translate",
       "icon": "ocr.png",
