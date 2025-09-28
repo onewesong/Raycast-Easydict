@@ -67,11 +67,20 @@ export default function VocabularyBookCommand() {
     }
   };
 
-  const filteredList = vocabularyList.filter(
-    (item) =>
-      item.word.toLowerCase().includes(searchText.toLowerCase()) ||
-      (item.translation && item.translation.toLowerCase().includes(searchText.toLowerCase())),
-  );
+  const [filteredList, setFilteredList] = useState<VocabularyItem[]>(vocabularyList);
+
+  useEffect(() => {
+    const updateFilteredList = async () => {
+      if (searchText) {
+        const results = await VocabularyManager.getInstance().searchVocabulary(searchText);
+        setFilteredList(results);
+      } else {
+        setFilteredList(vocabularyList);
+      }
+    };
+
+    updateFilteredList();
+  }, [searchText, vocabularyList]);
 
   const formatTimestamp = (timestamp: number) => {
     const date = new Date(timestamp);
@@ -93,7 +102,7 @@ export default function VocabularyBookCommand() {
         />
       )}
 
-      {filteredList.map((item) => (
+      {filteredList.map((item: VocabularyItem) => (
         <List.Item
           key={`${item.word}-${item.timestamp}`}
           title={item.word}
@@ -110,6 +119,30 @@ export default function VocabularyBookCommand() {
                 onAction={() => removeVocabulary(item.word)}
               />
               <Action title="Refresh List" icon={Icon.ArrowClockwise} onAction={loadVocabularyList} />
+              <Action
+                title="Clear All Vocabulary"
+                icon={Icon.Trash}
+                style={Action.Style.Destructive}
+                onAction={async () => {
+                  const vocabularyManager = VocabularyManager.getInstance();
+                  const success = await vocabularyManager.clearAllVocabulary();
+
+                  if (success) {
+                    await showToast({
+                      style: Toast.Style.Success,
+                      title: "Vocabulary Cleared",
+                      message: "All vocabulary has been removed",
+                    });
+                    await loadVocabularyList();
+                  } else {
+                    await showToast({
+                      style: Toast.Style.Failure,
+                      title: "Failed to Clear",
+                      message: "Failed to clear vocabulary",
+                    });
+                  }
+                }}
+              />
             </ActionPanel>
           }
         />
