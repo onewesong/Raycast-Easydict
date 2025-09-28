@@ -9,34 +9,37 @@
  */
 
 import { Action, ActionPanel, Icon, List, showToast, Toast } from "@raycast/api";
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import { VocabularyManager, VocabularyItem } from "./vocabulary/wordbook";
+import { useSQL } from "@raycast/utils";
+import { homedir } from "os";
+import { join } from "path";
 
 export default function VocabularyBookCommand() {
-  const [vocabularyList, setVocabularyList] = useState<VocabularyItem[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
   const [searchText, setSearchText] = useState("");
 
-  useEffect(() => {
-    loadVocabularyList();
-  }, []);
+  const DB_PATH = useMemo(() => join(homedir(), ".easydict", "vocabulary.db"), []);
 
-  const loadVocabularyList = async () => {
-    setIsLoading(true);
-    try {
-      const vocabularyManager = VocabularyManager.getInstance();
-      const items = await vocabularyManager.getVocabularyList();
-      setVocabularyList(items);
-    } catch {
-      await showToast({
-        style: Toast.Style.Failure,
-        title: "Failed to load vocabulary",
-        message: "Could not load vocabulary book",
-      });
-    } finally {
-      setIsLoading(false);
-    }
-  };
+  const baseSelect = `SELECT word, translation, phonetic,
+    from_language as fromLanguage,
+    to_language as toLanguage,
+    note, created_at as timestamp
+    FROM vocabulary`;
+
+  const escapeLike = (s: string) => s.replaceAll("'", "''");
+  const query = useMemo(() => {
+    if (!searchText) return `${baseSelect} ORDER BY created_at DESC`;
+    const p = escapeLike(searchText);
+    return `${baseSelect} WHERE word LIKE '%${p}%' OR translation LIKE '%${p}%' ORDER BY created_at DESC`;
+  }, [searchText]);
+
+  const { data, isLoading, permissionView, revalidate } = useSQL<VocabularyItem>(DB_PATH, query, {
+    permissionPriming: "用于读取/管理生词本数据库",
+  });
+
+  if (permissionView) {
+    return permissionView;
+  }
 
   const removeVocabulary = async (word: string) => {
     try {
@@ -49,8 +52,7 @@ export default function VocabularyBookCommand() {
           title: "Removed from Vocabulary Book",
           message: `"${word}" has been removed`,
         });
-        // 重新加载列表
-        await loadVocabularyList();
+        await revalidate();
       } else {
         await showToast({
           style: Toast.Style.Failure,
@@ -67,20 +69,7 @@ export default function VocabularyBookCommand() {
     }
   };
 
-  const [filteredList, setFilteredList] = useState<VocabularyItem[]>(vocabularyList);
-
-  useEffect(() => {
-    const updateFilteredList = async () => {
-      if (searchText) {
-        const results = await VocabularyManager.getInstance().searchVocabulary(searchText);
-        setFilteredList(results);
-      } else {
-        setFilteredList(vocabularyList);
-      }
-    };
-
-    updateFilteredList();
-  }, [searchText, vocabularyList]);
+  const filteredList = useMemo(() => (data || []) as VocabularyItem[], [data, query]);
 
   const formatTimestamp = (timestamp: number) => {
     const date = new Date(timestamp);
@@ -118,7 +107,7 @@ export default function VocabularyBookCommand() {
                 style={Action.Style.Destructive}
                 onAction={() => removeVocabulary(item.word)}
               />
-              <Action title="Refresh List" icon={Icon.ArrowClockwise} onAction={loadVocabularyList} />
+              <Action title="Refresh List" icon={Icon.ArrowClockwise} onAction={revalidate} />
               <Action
                 title="Clear All Vocabulary"
                 icon={Icon.Trash}
@@ -133,7 +122,7 @@ export default function VocabularyBookCommand() {
                       title: "Vocabulary Cleared",
                       message: "All vocabulary has been removed",
                     });
-                    await loadVocabularyList();
+                    await revalidate();
                   } else {
                     await showToast({
                       style: Toast.Style.Failure,

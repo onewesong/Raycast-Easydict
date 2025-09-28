@@ -5,18 +5,20 @@
  * @lastEditTime: 2025-01-28 10:00
  * @fileName: database.ts
  *
- * SQLite 数据库管理器
+ * SQLite 数据库管理器（基于 Raycast executeSQL）
  */
 
-import Database from "better-sqlite3";
+import { executeSQL } from "@raycast/utils";
+import { spawn } from "child_process";
 import { homedir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
+import { promises as fs } from "fs";
 import { VocabularyItem } from "./wordbook";
 
 export class DatabaseManager {
   private static instance: DatabaseManager;
-  private db: Database.Database | null = null;
   private dbPath: string;
+  private initialized = false;
 
   private constructor() {
     this.dbPath = join(homedir(), ".easydict", "vocabulary.db");
@@ -30,64 +32,82 @@ export class DatabaseManager {
   }
 
   /**
-   * 初始化数据库连接
+   * 确保数据库和表已初始化
    */
-  private initDatabase(): void {
-    if (this.db) return;
+  public async ensureInitialized(): Promise<void> {
+    if (this.initialized) return;
 
-    this.db = new Database(this.dbPath);
+    try {
+      await fs.mkdir(dirname(this.dbPath), { recursive: true });
 
-    // 创建词汇表
-    const createTableSQL = `
-      CREATE TABLE IF NOT EXISTS vocabulary (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        word TEXT NOT NULL UNIQUE,
-        translation TEXT,
-        phonetic TEXT,
-        from_language TEXT,
-        to_language TEXT,
-        note TEXT,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      )
-    `;
+      // 创建词汇表
+      const createTableSQL = `
+        CREATE TABLE IF NOT EXISTS vocabulary (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          word TEXT NOT NULL UNIQUE,
+          translation TEXT,
+          phonetic TEXT,
+          from_language TEXT,
+          to_language TEXT,
+          note TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `;
+      await this.executeWriteSQL(createTableSQL);
 
-    this.db.exec(createTableSQL);
+      // 创建索引以提高查询性能
+      const createIndexSQL = `
+        CREATE INDEX IF NOT EXISTS idx_vocabulary_word ON vocabulary(word);
+        CREATE INDEX IF NOT EXISTS idx_vocabulary_created_at ON vocabulary(created_at);
+      `;
+      await this.executeWriteSQL(createIndexSQL);
 
-    // 创建索引以提高查询性能
-    const createIndexSQL = `
-      CREATE INDEX IF NOT EXISTS idx_vocabulary_word ON vocabulary(word);
-      CREATE INDEX IF NOT EXISTS idx_vocabulary_created_at ON vocabulary(created_at);
-    `;
+      this.initialized = true;
+    } catch (error) {
+      // 打印错误，但不抛出，避免阻断 UI
+      console.error("Failed to initialize vocabulary database:", error);
+    }
+  }
 
-    this.db.exec(createIndexSQL);
+  /**
+   * 以可写模式执行 SQL（使用系统 sqlite3 CLI）
+   */
+  private async executeWriteSQL(sql: string): Promise<void> {
+    await fs.mkdir(dirname(this.dbPath), { recursive: true });
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn("sqlite3", [this.dbPath, sql], { stdio: ["ignore", "pipe", "pipe"] });
+      let stderr = "";
+      child.stderr.on("data", (d) => (stderr += String(d)));
+      child.on("error", (e) => reject(e));
+      child.on("close", (code) => {
+        if (code !== 0) {
+          reject(new Error(stderr || `sqlite3 exited with code ${code}`));
+        } else {
+          resolve();
+        }
+      });
+    });
   }
 
   /**
    * 添加词汇到数据库
    */
-  public addVocabulary(item: Omit<VocabularyItem, "timestamp">): boolean {
+  public async addVocabulary(item: Omit<VocabularyItem, "timestamp">): Promise<boolean> {
     try {
-      this.initDatabase();
+      await this.ensureInitialized();
 
       const now = Date.now();
-      const stmt = this.db!.prepare(`
+      await this.executeWriteSQL(`
         INSERT OR REPLACE INTO vocabulary (word, translation, phonetic, from_language, to_language, note, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES ('${item.word.replaceAll("'", "''")}', ${item.translation ? `'${item.translation.replaceAll("'", "''")}'` : "NULL"}, ${
+          item.phonetic ? `'${item.phonetic.replaceAll("'", "''")}'` : "NULL"
+        }, ${item.fromLanguage ? `'${item.fromLanguage.replaceAll("'", "''")}'` : "NULL"}, ${
+          item.toLanguage ? `'${item.toLanguage.replaceAll("'", "''")}'` : "NULL"
+        }, ${item.note ? `'${item.note.replaceAll("'", "''")}'` : "NULL"}, ${now}, ${now})
       `);
 
-      const result = stmt.run(
-        item.word,
-        item.translation,
-        item.phonetic,
-        item.fromLanguage,
-        item.toLanguage,
-        item.note,
-        now,
-        now,
-      );
-
-      return result.changes > 0;
+      return true;
     } catch (error) {
       console.error("Failed to add vocabulary to database:", error);
       return false;
@@ -97,18 +117,21 @@ export class DatabaseManager {
   /**
    * 获取所有词汇列表
    */
-  public getVocabularyList(): VocabularyItem[] {
+  public async getVocabularyList(): Promise<VocabularyItem[]> {
     try {
-      this.initDatabase();
-
-      const stmt = this.db!.prepare(`
-        SELECT word, translation, phonetic, from_language, to_language, note, created_at as timestamp
+      await this.ensureInitialized();
+      const rows = (await executeSQL(
+        this.dbPath,
+        `
+        SELECT word, translation, phonetic,
+               from_language as fromLanguage,
+               to_language as toLanguage,
+               note, created_at as timestamp
         FROM vocabulary
         ORDER BY created_at DESC
-      `);
-
-      const rows = stmt.all() as VocabularyItem[];
-      return rows;
+      `,
+      )) as VocabularyItem[] | undefined;
+      return rows ?? [];
     } catch (error) {
       console.error("Failed to get vocabulary list from database:", error);
       return [];
@@ -118,20 +141,23 @@ export class DatabaseManager {
   /**
    * 根据关键词搜索词汇
    */
-  public searchVocabulary(searchText: string): VocabularyItem[] {
+  public async searchVocabulary(searchText: string): Promise<VocabularyItem[]> {
     try {
-      this.initDatabase();
-
-      const stmt = this.db!.prepare(`
-        SELECT word, translation, phonetic, from_language, to_language, note, created_at as timestamp
+      await this.ensureInitialized();
+      const pattern = `%${searchText}%`;
+      const rows = (await executeSQL(
+        this.dbPath,
+        `
+        SELECT word, translation, phonetic,
+               from_language as fromLanguage,
+               to_language as toLanguage,
+               note, created_at as timestamp
         FROM vocabulary
-        WHERE word LIKE ? OR translation LIKE ?
+        WHERE word LIKE '%${pattern.replaceAll("'", "''")}%' OR translation LIKE '%${pattern.replaceAll("'", "''")}%' 
         ORDER BY created_at DESC
-      `);
-
-      const searchPattern = `%${searchText}%`;
-      const rows = stmt.all(searchPattern, searchPattern) as VocabularyItem[];
-      return rows;
+      `,
+      )) as VocabularyItem[] | undefined;
+      return rows ?? [];
     } catch (error) {
       console.error("Failed to search vocabulary in database:", error);
       return [];
@@ -141,14 +167,11 @@ export class DatabaseManager {
   /**
    * 移除词汇
    */
-  public removeVocabulary(word: string): boolean {
+  public async removeVocabulary(word: string): Promise<boolean> {
     try {
-      this.initDatabase();
-
-      const stmt = this.db!.prepare("DELETE FROM vocabulary WHERE word = ?");
-      const result = stmt.run(word);
-
-      return result.changes > 0;
+      await this.ensureInitialized();
+      await this.executeWriteSQL(`DELETE FROM vocabulary WHERE word = '${word.replaceAll("'", "''")}'`);
+      return true;
     } catch (error) {
       console.error("Failed to remove vocabulary from database:", error);
       return false;
@@ -158,14 +181,15 @@ export class DatabaseManager {
   /**
    * 检查词汇是否存在
    */
-  public isVocabularyExists(word: string): boolean {
+  public async isVocabularyExists(word: string): Promise<boolean> {
     try {
-      this.initDatabase();
-
-      const stmt = this.db!.prepare("SELECT COUNT(*) as count FROM vocabulary WHERE word = ?");
-      const result = stmt.get(word) as { count: number };
-
-      return result.count > 0;
+      await this.ensureInitialized();
+      const rows = (await executeSQL(
+        this.dbPath,
+        `SELECT COUNT(*) as count FROM vocabulary WHERE word = '${word.replaceAll("'", "''")}'`,
+      )) as { count: number }[] | undefined;
+      const count = rows && rows.length > 0 ? Number(rows[0].count) : 0;
+      return count > 0;
     } catch (error) {
       console.error("Failed to check vocabulary existence in database:", error);
       return false;
@@ -175,14 +199,14 @@ export class DatabaseManager {
   /**
    * 获取词汇数量
    */
-  public getVocabularyCount(): number {
+  public async getVocabularyCount(): Promise<number> {
     try {
-      this.initDatabase();
-
-      const stmt = this.db!.prepare("SELECT COUNT(*) as count FROM vocabulary");
-      const result = stmt.get() as { count: number };
-
-      return result.count;
+      await this.ensureInitialized();
+      const rows = (await executeSQL(this.dbPath, "SELECT COUNT(*) as count FROM vocabulary")) as
+        | { count: number }[]
+        | undefined;
+      const count = rows && rows.length > 0 ? Number(rows[0].count) : 0;
+      return count;
     } catch (error) {
       console.error("Failed to get vocabulary count from database:", error);
       return 0;
@@ -192,14 +216,11 @@ export class DatabaseManager {
   /**
    * 清空所有词汇
    */
-  public clearAllVocabulary(): boolean {
+  public async clearAllVocabulary(): Promise<boolean> {
     try {
-      this.initDatabase();
-
-      const stmt = this.db!.prepare("DELETE FROM vocabulary");
-      const result = stmt.run();
-
-      return result.changes >= 0; // 即使没有删除任何行也算成功
+      await this.ensureInitialized();
+      await this.executeWriteSQL("DELETE FROM vocabulary");
+      return true;
     } catch (error) {
       console.error("Failed to clear vocabulary from database:", error);
       return false;
@@ -211,15 +232,5 @@ export class DatabaseManager {
    */
   public getDatabasePath(): string {
     return this.dbPath;
-  }
-
-  /**
-   * 关闭数据库连接
-   */
-  public close(): void {
-    if (this.db) {
-      this.db.close();
-      this.db = null;
-    }
   }
 }
