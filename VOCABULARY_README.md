@@ -12,6 +12,7 @@ Easydict 扩展现已支持 SQLite 数据库驱动的生词本功能，提供更
 - **🛡️ 数据完整性**：UNIQUE 约束防止重复单词，事务确保数据一致性
 - **📝 完整信息记录**：记录单词、翻译、音标、语言对、备注、时间戳等
 - **🎨 现代化 UI**：在 Raycast 中提供直观的生词本管理界面
+- **🔁 单词复习**：内置背单词命令，基于生词本数据和间隔重复策略安排复习
 
 ## 🎮 使用方法
 
@@ -41,6 +42,17 @@ Easydict 扩展现已支持 SQLite 数据库驱动的生词本功能，提供更
 - **🧹 清空**：清空所有生词（需确认）
 - **🔄 刷新**：重新加载生词列表
 
+### 4. 背单词 / 复习生词
+
+1. 在 Raycast 中搜索 "Vocabulary Review"
+2. 进入复习界面后，系统会根据 _间隔重复_ 策略挑选需要巩固的单词
+3. 先尝试回忆释义，点击「显示释义」查看答案
+4. 根据记忆情况选择：
+   - **记住**：提升熟练度，延长下次复习间隔
+   - **较难**：轻微提升熟练度，保持较短复习间隔
+   - **忘记了**：降低熟练度，并重置为短间隔复习
+5. 可以随时刷新队列或跳过难以回答的单词
+
 ## 💾 数据存储
 
 ### 数据库位置
@@ -59,16 +71,30 @@ CREATE TABLE vocabulary (
   phonetic TEXT,                           -- 音标
   from_language TEXT,                      -- 源语言
   to_language TEXT,                        -- 目标语言
-  note TEXT,                              -- 备注
-  created_at INTEGER NOT NULL,            -- 创建时间戳
-  updated_at INTEGER NOT NULL             -- 更新时间戳
+  note TEXT,                               -- 备注
+  created_at INTEGER NOT NULL,             -- 创建时间戳
+  updated_at INTEGER NOT NULL              -- 更新时间戳
+);
+
+CREATE TABLE vocabulary_progress (
+  word TEXT PRIMARY KEY,                   -- 单词（引用 vocabulary.word）
+  proficiency INTEGER NOT NULL DEFAULT 0,  -- 熟练度等级
+  review_count INTEGER NOT NULL DEFAULT 0, -- 总复习次数
+  success_count INTEGER NOT NULL DEFAULT 0,-- 成功次数
+  fail_count INTEGER NOT NULL DEFAULT 0,   -- 遗忘次数
+  last_reviewed_at INTEGER,                -- 最近复习时间
+  next_review_at INTEGER,                  -- 下次复习时间
+  FOREIGN KEY (word) REFERENCES vocabulary(word) ON DELETE CASCADE
 );
 ```
 
-### 索引
+### 索引与触发器
 
 - `idx_vocabulary_word`: 单词索引（快速查找）
 - `idx_vocabulary_created_at`: 时间索引（快速排序）
+- `idx_vocabulary_progress_word`: 复习进度主索引
+- `idx_vocabulary_progress_next_review`: 按计划复习时间排序
+- 触发器 `trg_vocabulary_delete`：删除生词时同步清理复习进度
 
 ## 🛠️ 技术实现
 
@@ -76,9 +102,10 @@ CREATE TABLE vocabulary (
 
 ```
 src/vocabulary/
-├── database.ts      # SQLite 数据库管理器
-├── wordbook.ts      # 生词本业务逻辑
-└── vocabulary-book.tsx  # 生词本 UI 界面
+├── database.ts          # SQLite 数据库管理器（含复习进度表）
+├── wordbook.ts          # 生词本业务逻辑与复习逻辑
+├── vocabulary-book.tsx  # 生词本 UI 界面
+└── vocabulary-review.tsx# 背单词 UI 界面
 ```
 
 ### 核心类
@@ -91,11 +118,16 @@ src/vocabulary/
 2. **VocabularyManager**: 生词本业务逻辑
    - 基于 DatabaseManager 提供高级 API
    - 处理数据验证和业务规则
-   - 提供搜索、去重等功能
+   - 提供搜索、去重、复习队列与统计等功能
 
 3. **VocabularyBookCommand**: Raycast UI 组件
    - 响应式搜索和列表显示
    - 集成操作面板（复制、删除等）
+
+4. **VocabularyReviewCommand**: 背单词界面
+   - 自动加载待复习队列
+   - 支持展示释义、记录复习结果
+   - 复习完成后实时刷新
 
 ### 数据流程
 
@@ -103,6 +135,8 @@ src/vocabulary/
 用户输入 → 翻译查询 → 添加到生词本 → 存储到 SQLite → UI 显示
     ↑              ↓                    ↓
     └─ 搜索显示 ←──┘                    └─ 数据库查询
+                           ↓
+                      背单词提示 ←─ 复习队列计算
 ```
 
 ## 🔧 开发与维护
