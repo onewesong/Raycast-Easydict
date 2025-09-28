@@ -125,6 +125,47 @@ export function ListActionPanel(props: ActionListPanelProps) {
         {props.isInstalledEudic && myPreferences.showOpenInEudicFirst && (
           <Action icon={Icon.MagnifyingGlass} title="Open in Eudic App" onAction={() => openInEudic(word)} />
         )}
+        <Action
+          title="Add to Vocabulary Book"
+          icon={Icon.Plus}
+          onAction={async () => {
+            const vocabularyManager = VocabularyManager.getInstance();
+
+            // 检查是否已存在
+            const exists = await vocabularyManager.isVocabularyExists(word);
+            if (exists) {
+              await showToast({
+                style: Toast.Style.Failure,
+                title: "Already in Vocabulary Book",
+                message: `"${word}" is already in your vocabulary book`,
+              });
+              return;
+            }
+
+            // 添加到生词本
+            const success = await vocabularyManager.addVocabulary({
+              word,
+              translation: copyText,
+              phonetic: queryWordInfo.phonetic,
+              fromLanguage: fromLanguage,
+              toLanguage: toLanguage,
+            });
+
+            if (success) {
+              await showToast({
+                style: Toast.Style.Success,
+                title: "Added to Vocabulary Book",
+                message: `"${word}" has been added to your vocabulary book`,
+              });
+            } else {
+              await showToast({
+                style: Toast.Style.Failure,
+                title: "Failed to Add",
+                message: `Failed to add "${word}" to vocabulary book`,
+              });
+            }
+          }}
+        />
         {CopyTextAction({ copyText })}
         {props.isInstalledEudic && !myPreferences.showOpenInEudicFirst && (
           <Action icon={Icon.MagnifyingGlass} title="Open in Eudic App" onAction={() => openInEudic(word)} />
@@ -172,50 +213,6 @@ export function ListActionPanel(props: ActionListPanelProps) {
              *  Todo: add a shortcut to stop playing audio.
              */
             sayTruncateCommand(copyText, toLanguage);
-          }}
-        />
-      </ActionPanel.Section>
-
-      <ActionPanel.Section title="Vocabulary">
-        <Action
-          title="Add to Vocabulary Book"
-          icon={Icon.Plus}
-          onAction={async () => {
-            const vocabularyManager = VocabularyManager.getInstance();
-
-            // 检查是否已存在
-            const exists = await vocabularyManager.isVocabularyExists(word);
-            if (exists) {
-              await showToast({
-                style: Toast.Style.Failure,
-                title: "Already in Vocabulary Book",
-                message: `"${word}" is already in your vocabulary book`,
-              });
-              return;
-            }
-
-            // 添加到生词本
-            const success = await vocabularyManager.addVocabulary({
-              word,
-              translation: copyText,
-              phonetic: queryWordInfo.phonetic,
-              fromLanguage: fromLanguage,
-              toLanguage: toLanguage,
-            });
-
-            if (success) {
-              await showToast({
-                style: Toast.Style.Success,
-                title: "Added to Vocabulary Book",
-                message: `"${word}" has been added to your vocabulary book`,
-              });
-            } else {
-              await showToast({
-                style: Toast.Style.Failure,
-                title: "Failed to Add",
-                message: `Failed to add "${word}" to vocabulary book`,
-              });
-            }
           }}
         />
       </ActionPanel.Section>
