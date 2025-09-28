@@ -10,6 +10,27 @@
 
 import { DatabaseManager } from "./database";
 
+export const REVIEW_INTERVALS = [
+  5 * 60 * 1000, // 5 分钟
+  12 * 60 * 60 * 1000, // 12 小时
+  24 * 60 * 60 * 1000, // 1 天
+  3 * 24 * 60 * 60 * 1000, // 3 天
+  7 * 24 * 60 * 60 * 1000, // 7 天
+  30 * 24 * 60 * 60 * 1000, // 30 天
+] as const;
+
+export const MAX_PROFICIENCY = REVIEW_INTERVALS.length - 1;
+
+function getDefaultProgress(word: string): VocabularyReviewProgress {
+  return {
+    word,
+    proficiency: 0,
+    reviewCount: 0,
+    successCount: 0,
+    failCount: 0,
+  };
+}
+
 export interface VocabularyItem {
   word: string;
   translation?: string;
@@ -19,6 +40,26 @@ export interface VocabularyItem {
   timestamp: number;
   note?: string;
 }
+
+export interface VocabularyReviewProgress {
+  word: string;
+  proficiency: number;
+  reviewCount: number;
+  successCount: number;
+  failCount: number;
+  lastReviewedAt?: number;
+  nextReviewAt?: number;
+}
+
+export interface VocabularyReviewItem extends VocabularyItem, VocabularyReviewProgress {}
+
+export interface VocabularyReviewStatistics {
+  total: number;
+  due: number;
+  mastered: number;
+}
+
+export type ReviewResult = "remember" | "hard" | "forget";
 
 export class VocabularyManager {
   private static instance: VocabularyManager;
@@ -93,6 +134,77 @@ export class VocabularyManager {
    */
   public async clearAllVocabulary(): Promise<boolean> {
     return await this.databaseManager.clearAllVocabulary();
+  }
+
+  /**
+   * 获取复习队列
+   */
+  public async getReviewQueue(limit = 20, onlyDue = true): Promise<VocabularyReviewItem[]> {
+    return await this.databaseManager.getReviewQueue(limit, onlyDue);
+  }
+
+  /**
+   * 获取复习进度
+   */
+  public async getReviewProgress(word: string): Promise<VocabularyReviewProgress | undefined> {
+    return await this.databaseManager.getReviewProgress(word);
+  }
+
+  /**
+   * 更新复习进度
+   */
+  public async updateReviewProgress(progress: VocabularyReviewProgress): Promise<boolean> {
+    return await this.databaseManager.upsertReviewProgress(progress);
+  }
+
+  /**
+   * 根据复习结果更新进度
+   */
+  public async applyReviewResult(word: string, result: ReviewResult): Promise<VocabularyReviewProgress | undefined> {
+    const progress = (await this.databaseManager.getReviewProgress(word)) ?? getDefaultProgress(word);
+    const now = Date.now();
+
+    let { proficiency } = progress;
+    if (result === "remember") {
+      proficiency = Math.min(proficiency + 1, MAX_PROFICIENCY);
+    } else if (result === "hard") {
+      proficiency = Math.min(proficiency + 1, MAX_PROFICIENCY);
+    } else {
+      proficiency = Math.max(proficiency - 1, 0);
+    }
+
+    const intervalIndex = result === "forget" ? 0 : Math.min(proficiency, MAX_PROFICIENCY);
+    const nextReviewAt = now + REVIEW_INTERVALS[intervalIndex];
+
+    const updatedProgress: VocabularyReviewProgress = {
+      word,
+      proficiency,
+      reviewCount: progress.reviewCount + 1,
+      successCount: progress.successCount + (result !== "forget" ? 1 : 0),
+      failCount: progress.failCount + (result === "forget" ? 1 : 0),
+      lastReviewedAt: now,
+      nextReviewAt,
+    };
+
+    const success = await this.updateReviewProgress(updatedProgress);
+    if (success) {
+      return updatedProgress;
+    }
+    return undefined;
+  }
+
+  /**
+   * 清空复习进度
+   */
+  public async clearReviewProgress(word?: string): Promise<boolean> {
+    return await this.databaseManager.clearReviewProgress(word);
+  }
+
+  /**
+   * 获取复习统计
+   */
+  public async getReviewStatistics(): Promise<VocabularyReviewStatistics> {
+    return await this.databaseManager.getReviewStatistics();
   }
 
   /**

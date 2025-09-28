@@ -35,6 +35,13 @@
       "mode": "view"
     },
     {
+      "name": "vocabulary-review",
+      "title": "Vocabulary Review",
+      "subtitle": "Review words in your vocabulary book",
+      "description": "Review and reinforce vocabulary with spaced repetition.",
+      "mode": "view"
+    },
+    {
       "name": "ocr",
       "title": "OCR Translate",
       "icon": "ocr.png",
